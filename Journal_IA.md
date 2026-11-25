@@ -1,4 +1,4 @@
-# Journal IA — Kilasy C1 : Pénalité de retard
+# Journal IA — Kilasy C1/C2 : Pénalité de retard et notification SMS
 
 Outil utilisé : opencode (modèle big-pickle), dans le terminal, sur le fork
 `vals43/hei-kilasy-STD24041`.
@@ -68,3 +68,57 @@ GitHub. OK.
 - Vérifications effectuées : soumissions 1 → 16, 2 → 14,4, 3 → 11,2, 4 → 8 ;
   relevé de Bob et export CSV cohérents (14,4) ; notation de la soumission 7 →
   14,4 dans la réponse, le relevé, le CSV et l'email Mailpit.
+
+## C2 — Notification par SMS
+
+### Échange 1 — besoin et contrainte d'architecture
+Demande : « L'étudiant doit aussi recevoir un SMS simulé dans les logs ; si
+l'envoi échoue, la note reste publiée ; changer de fournisseur plus tard ne doit
+pas modifier la notation. »
+Proposition : introduire une interface `SmsSender` et une implémentation
+`LogSmsSender` annotée `@Component`. `SubmissionController` ne connaît que
+l'interface, comme il connaît déjà `JavaMailSender`.
+Décision : gardé.
+Pourquoi : la mise à jour de la note est faite avant les notifications. Un
+autre fournisseur sera un autre bean, sans toucher au code de la notation.
+Vérification : compilation avec JDK 21 OK.
+
+### Échange 2 — tolérance aux pannes
+Demande : « Simulez une panne en levant une exception et vérifiez ce que devient
+la note. »
+Proposition : `@Value("${sms.simulate-failure:false}")` dans `LogSmsSender`,
+exception levée quand la propriété est vraie ; capture de l'exception dans
+`SubmissionController`, log `[SMS][ERREUR]` et poursuite normale.
+Divergence : fallait-il laisser l'exception remonter ou l'isoler ? J'ai retenu
+l'isolement, car le critère demande explicitement que la note reste publiée ;
+l'email est envoyé avant le SMS et reste inchangé.
+Décision : gardé.
+Vérification : avec `--sms.simulate-failure=true`, `PUT /submissions/12/grade`
+(30/40) → réponse `grade: 15.0`, log `[SMS][ERREUR] envoi impossible pour
++261 34 00 000 06`, email reçu par Felix, `GET /submissions/12` → 15.0 et
+export CSV → `15,0`. OK.
+
+### Échange 3 — format du message
+Demande : « Un message dans les logs suffit. »
+Proposition : `[SMS] <téléphone> : Votre note pour « <exercice> » est disponible :
+<note>/20.`
+Correction : `BigDecimal` affiche `14.4`, mais l'exemple du client attend
+`14,4` ; j'ai utilisé `toPlainString().replace('.', ',')`.
+Décision : gardé.
+Vérification : en mode normal, `PUT /submissions/7/grade` (8/10) → log
+`[SMS] +261 34 00 000 02 : Votre note pour « Pile et file » est disponible :
+14,4/20.`, email reçu par Bob, réponse `grade: 14.4`. OK.
+
+## Bilan C2 — ce que j'ai gardé, corrigé ou refusé
+- Gardé : interface `SmsSender`, implémentation `LogSmsSender`, envoi après la
+  publication de la note et après l'email, affichage de la note avec une virgule,
+  et commits distincts.
+- Corrigé : le séparateur décimal du SMS (`14.4` → `14,4`) pour coller à
+  l'exemple du client.
+- Refusé : un appel direct au logger dans `SubmissionController` (aurait lié la
+  notation au fournisseur) et la propagation de l'exception SMS (aurait fait
+  échouer la publication de la note).
+- Fichiers ajoutés : `SmsSender.java`, `LogSmsSender.java`.
+- Fichiers modifiés : `SubmissionController.java`, `Journal_IA.md`.
+- Fichier non commité : `compose.yaml` (port 5434, spécifique à la machine).
+- Application relancée en mode normal après le test de panne.
