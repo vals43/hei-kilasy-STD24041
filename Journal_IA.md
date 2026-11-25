@@ -1,4 +1,4 @@
-# Journal IA — Kilasy C1/C2 : Pénalité de retard et notification SMS
+# Journal IA — Kilasy C1/C2/C3 : Pénalité, SMS et exercices minutés
 
 Outil utilisé : opencode (modèle big-pickle), dans le terminal, sur le fork
 `vals43/hei-kilasy-STD24041`.
@@ -122,3 +122,75 @@ Vérification : en mode normal, `PUT /submissions/7/grade` (8/10) → log
 - Fichiers modifiés : `SubmissionController.java`, `Journal_IA.md`.
 - Fichier non commité : `compose.yaml` (port 5434, spécifique à la machine).
 - Application relancée en mode normal après le test de panne.
+
+## C3 — Exercices minutés
+
+### Échange 1 — modèle de données
+Demande : « L'enseignant fixe une durée en minutes ; le décompte démarre quand
+l'étudiant ouvre l'exercice ; la soumission doit arriver avant la fin. »
+Proposition : `exercise.duration_minutes` (nullable), `deadline` rendu nullable,
+et une table `exercise_start(exercise_id, student_id, started_at)`.
+Divergence d'architecture : j'ai écarté l'idée de stocker `started_at` dans
+`submission`, car la ligne de soumission n'existe pas encore au démarrage et
+`submitted_at` est `NOT NULL` avec une valeur par défaut.
+Décision : gardé.
+Pourquoi : la table dédiée garde le chrono indépendant de la soumission et
+permet d'afficher le temps utilisé même avant la notation.
+Vérification : `docker compose down/up`, schéma recréé, 7 exercices dont les
+id 6 (sans échéance) et 7 (avec échéance passée) minutés à 1 minute.
+
+### Échange 2 — préservation de la base de démo
+Demande : « On garde toujours une trace de la base de démo. »
+Proposition initiale : suivre la consigne LMS (`down/up`) en perdant les notes
+de test C1/C2.
+Correction : `pg_dump --data-only --column-inserts --on-conflict-do-nothing`
+avant le `down`, restauration après le `up`, puis `UPDATE` explicite des
+soumissions 5, 7 et 12, car `ON CONFLICT DO NOTHING` ne remplaçait pas les
+lignes déjà insérées par `data.sql`, et `setval` de la séquence `exercise` à 7.
+Décision : gardé.
+Vérification : 12 soumissions de démo toujours présentes, dont 5 → 15, 7 → 8
+et 12 → 30.
+
+### Échange 3 — contrôle du chrono
+Demande : `POST /exercises/{id}/start`, refus HTTP 422 après la fin du délai,
+exercices sans durée inchangés.
+Proposition : nouveau `ExerciseStartController.java` qui répond 201 avec
+`startedAt`/`endsAt`, 404 si exercice ou étudiant inconnu, 409 si déjà démarré,
+400 si l'exercice n'est pas minuté ; `SubmissionController` vérifie le start et
+`endsAt` avant l'insertion, avec un message explicite en 422.
+Décision : gardé.
+Vérification : start exercise 6 → 201, soumission immédiate → 201 ; second
+start → 409 ; soumission sans start sur l'exercice 7 → 422 ; start exercice 6
+étudiant 2 puis attente de 62 s → 422 « Délai dépassé pour cet exercice minuté »
+et aucune ligne créée ; `/submissions/2` reste à 14,4.
+
+### Échange 4 — relevé et pénalité C1
+Demande : « Le relevé indique le temps utilisé ; la pénalité du changement 1
+continue de s'appliquer par rapport à l'échéance. »
+Proposition : jointure `exercise_start` dans `GradeReport.build`, champs
+`timeUsedSeconds` et `timeUsed` au format lisible, et `penalizedGrade` qui
+accepte une échéance nulle (donc aucune pénalité pour un exercice seulement
+minuté).
+Correction apportée : l'étudiant a demandé le champ lisible en plus du nombre,
+d'où `timeUsed: "0 min 3 s"` en complément de `timeUsedSeconds: 3`.
+Décision : gardé.
+Vérification : exercice 6 noté 20/20 → 20,0 dans la réponse, le relevé et le
+CSV (échéance `null`) ; exercice 7 noté 20/20 → 10,0 (pénalité C1 plafonnée à
+50 % par rapport au 10/11) dans les trois vues ; temps utilisé présent dans le
+relevé ; email et SMS toujours envoyés.
+
+## Bilan C3 — ce que j'ai gardé, corrigé ou refusé
+- Gardé : table `exercise_start`, durée optionnelle, contrôle du chrono avant
+  soumission, 422 explicite, champ lisible `timeUsed` avec `timeUsedSeconds`,
+  pénalité C1 basée sur l'échéance quand elle existe, et commits distincts.
+- Corrigé : conservation de la base de démo par dump/restauration et UPDATE des
+  notes modifiées, séquence `exercise` recalculée, format lisible du temps.
+- Refusé : stocker le départ dans `submission` (la soumission n'existe pas au
+  démarrage), pénaliser un exercice minuté sans échéance (aucune date de
+  référence), et perdre les notes de test C1/C2 lors de la migration.
+- Fichiers ajoutés : `ExerciseStartController.java`.
+- Fichiers modifiés : `schema.sql`, `data.sql`, `Exercise.java`,
+  `ExerciseController.java`, `SubmissionController.java`, `GradeReport.java`,
+  `CsvExport.java`, `Journal_IA.md`.
+- Fichier non commité : `compose.yaml` (port 5434, spécifique à la machine).
+- Application laissée en mode normal après tous les tests.
