@@ -61,9 +61,23 @@ public class SubmissionController {
             return ResponseEntity.status(409).body(Map.of("error", "Cet étudiant a déjà soumis cet exercice"));
         }
 
-        LocalDate deadline = ((java.sql.Date) exercises.get(0).get("deadline")).toLocalDate();
         LocalDateTime now = LocalDateTime.now();
-        boolean late = now.toLocalDate().isAfter(deadline);
+        Object durationValue = exercises.get(0).get("duration_minutes");
+        if (durationValue != null) {
+            List<Map<String, Object>> starts = jdbcTemplate.queryForList(
+                    "SELECT started_at FROM exercise_start WHERE exercise_id = ? AND student_id = ?", id, studentId);
+            if (starts.isEmpty()) {
+                return ResponseEntity.status(422).body(Map.of("error", "Exercice minuté non démarré"));
+            }
+            LocalDateTime startedAt = ((Timestamp) starts.get(0).get("started_at")).toLocalDateTime();
+            LocalDateTime endsAt = startedAt.plusMinutes(((Number) durationValue).longValue());
+            if (!now.isBefore(endsAt)) {
+                return ResponseEntity.status(422).body(Map.of("error", "Délai dépassé pour cet exercice minuté"));
+            }
+        }
+        Object deadlineValue = exercises.get(0).get("deadline");
+        LocalDate deadline = deadlineValue == null ? null : ((java.sql.Date) deadlineValue).toLocalDate();
+        boolean late = deadline != null && now.toLocalDate().isAfter(deadline);
 
         jdbcTemplate.update(
                 "INSERT INTO submission (exercise_id, student_id, content, repo_url, submitted_at) VALUES (?, ?, ?, ?, ?)",
@@ -87,7 +101,8 @@ public class SubmissionController {
             return ResponseEntity.status(404).body(Map.of("error", "Soumission introuvable"));
         }
         Map<String, Object> row = rows.get(0);
-        LocalDate deadline = ((java.sql.Date) row.get("deadline")).toLocalDate();
+        Object deadlineValue = row.get("deadline");
+        LocalDate deadline = deadlineValue == null ? null : ((java.sql.Date) deadlineValue).toLocalDate();
         LocalDateTime submittedAt = ((Timestamp) row.get("submitted_at")).toLocalDateTime();
 
         Map<String, Object> result = new HashMap<>();
@@ -97,7 +112,7 @@ public class SubmissionController {
         result.put("content", row.get("content"));
         result.put("repoUrl", row.get("repo_url"));
         result.put("submittedAt", submittedAt);
-        result.put("late", submittedAt.toLocalDate().isAfter(deadline));
+        result.put("late", deadline != null && submittedAt.toLocalDate().isAfter(deadline));
         if (row.get("raw_points") != null) {
             BigDecimal raw = (BigDecimal) row.get("raw_points");
             BigDecimal max = (BigDecimal) row.get("max_points");
@@ -131,9 +146,10 @@ public class SubmissionController {
             return ResponseEntity.badRequest().body(Map.of("error", "Les points doivent être entre 0 et " + max));
         }
 
-        LocalDate deadline = ((java.sql.Date) row.get("deadline")).toLocalDate();
+        Object deadlineValue = row.get("deadline");
+        LocalDate deadline = deadlineValue == null ? null : ((java.sql.Date) deadlineValue).toLocalDate();
         LocalDateTime submittedAt = ((Timestamp) row.get("submitted_at")).toLocalDateTime();
-        boolean late = submittedAt.toLocalDate().isAfter(deadline);
+        boolean late = deadline != null && submittedAt.toLocalDate().isAfter(deadline);
 
         jdbcTemplate.update("UPDATE submission SET raw_points = ?, feedback = ?, graded_at = now() WHERE id = ?",
                 points, feedback, id);
